@@ -1,3 +1,71 @@
+# VejmanKassen SAP Dispatcher
+
+## Purpose
+
+This process collects all fakturering rows marked as **`Afsendt`**, safely claims them to avoid double processing, creates queue elements for further processing, and finally marks the rows as **`TilFakturering`**.
+
+The process is designed to be safe if multiple robot instances run at the same time.
+
+---
+
+## High-level flow
+
+1. **Claim rows**
+
+   * All rows with `FakturaStatus = 'Afsendt'` are atomically updated to `Claimed`.
+   * The claimed rows are returned in the same operation.
+   * SQL locking ensures that two parallel runs cannot claim the same rows.
+
+2. **Prepare queue data**
+
+   * For each claimed row, a JSON payload is created containing:
+
+     * `ID`
+     * `VejmanID` (or `"Henstilling"` if `VejmanID` is `NULL`)
+     * `Tilladelsesnr`
+   * Each row ID is used as the queue reference.
+
+3. **Bulk create queue elements**
+
+   * All payloads are sent in one call using bulk queue creation.
+
+4. **Finalize rows**
+
+   * Only the rows claimed in this run are updated from `Claimed` to `TilFakturering`.
+   * A SQL temporary table is used to precisely target the claimed rows.
+
+5. **Cleanup**
+
+   * The database transaction is committed and the connection is closed.
+   * Temporary tables are automatically removed when the connection closes.
+
+---
+
+## Concurrency guarantees
+
+* Rows are claimed using a single atomic SQL statement.
+* `UPDLOCK` and `READPAST` prevent multiple processes from claiming the same row.
+* Each run only finalizes rows it has claimed itself.
+
+---
+
+## Status lifecycle
+
+| Status           | Meaning                               |
+| ---------------- | ------------------------------------- |
+| `Afsendt`        | Ready to be picked up by the process  |
+| `Claimed`        | Temporarily reserved by a running job |
+| `TilFakturering` | Successfully queued for next step     |
+
+---
+
+## Notes
+
+* The process always handles **all available `Afsendt` rows** at the time it runs.
+* Temporary SQL tables are session-scoped and automatically dropped when the connection closes.
+* If no rows are found, the process exits without doing any work.
+
+
 # Robot-Framework V4
 
 This repo is meant to be used as a template for robots made for [OpenOrchestrator](https://github.com/itk-dev-rpa/OpenOrchestrator) v2.
